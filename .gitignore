@@ -1,0 +1,9 @@
+# generics
+/env/
+/node_modules/
+
+# extras
+*.pdf
+
+# secrets
+.env
