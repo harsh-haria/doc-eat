@@ -3,13 +3,7 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const weaviate = require('weaviate-client');
-const dotenv = require('dotenv');
-
-dotenv.config();
-
-const weaviateUri = process.env.VECTOR_DB_URI;
-const weaviateApiKey = process.env.VECTOR_DB_KEY;
-const openAIKey = process.env.OPENAI_KEY;
+const { getClient } = require('./weaviate');
 
 // New helper function to read file based on extension
 async function getSourceText(filePath) {
@@ -32,7 +26,8 @@ async function getSourceText(filePath) {
 }
 
 async function downloadAndChunk(filePath, chunkSize, overlapSize) {
-    const sourceText = await getSourceText(filePath);
+    const finalFilePath = path.join(process.env.UPLOAD_PATH, filePath);
+    const sourceText = await getSourceText(finalFilePath);
     const textWords = sourceText.replace(/\s+/g, ' ');
     // console.error(textWords);
     let chunks = [];
@@ -48,18 +43,10 @@ async function getChunks(localFilePath) {
     return chunks;
 }
 
-async function main(inputFileName, prompt) {
+async function processDocument(inputFileName) {
     try {
         // establish connection to the db
-        const client = await weaviate.connectToWeaviateCloud(
-            weaviateUri,
-            {
-                authCredentials: new weaviate.ApiKey(weaviateApiKey),
-                headers: {
-                    'X-OpenAI-Api-Key': openAIKey,
-                }
-            }
-        )
+        const WeaviateClient = await getClient();
         const file = inputFileName;
         const fileName = file.split('.').slice(0, -1).join('.');
         const chunkedData = await getChunks(file);
@@ -77,19 +64,20 @@ async function main(inputFileName, prompt) {
                     dataType: 'int'
                 }
             ],
-            vectorizers: weaviate.configure.vectorizer.text2VecOpenAI(),
+            vectorizers: weaviate.configure.vectorizer.text2VecOpenAI({
+                model: 'text-embedding-3-small',
+            }),
             generative: weaviate.configure.generative.openAI()
         }
 
-        if (await client.collections.exists(fileName)) {
-            await client.collections.delete(fileName);
+        if (await WeaviateClient.collections.exists(fileName)) {
+            await WeaviateClient.collections.delete(fileName);
         }
 
-        const newCollection = await client.collections.create(schemaDefinition)
-        // console.log('We have a new class!', newCollection['name']);
+        const collection = await WeaviateClient.collections.create(schemaDefinition)
 
         // upload the chunks to the database
-        const gitCollection = client.collections.get(fileName);
+        // const collection = WeaviateClient.collections.get(fileName);
         const list = [];
 
         for (const index in chunkedData) {
@@ -102,19 +90,36 @@ async function main(inputFileName, prompt) {
 
             list.push(obj);
         }
-        const result = await gitCollection.data.insertMany(list)
-        console.log('just bulk inserted', result);
+        const result = await collection.data.insertMany(list)
 
-        // insert the prompt and print the response
-        const response = await gitCollection.generate.fetchObjects({ groupedTask: prompt }, { limit: 2 });
-        console.log("AI: ", response.generated);
-        return;
+        if (result.hasErrors) {
+            return { status: 500, message: "Processing failed", error: result.errors };
+        }
+
+        return { status: 200, message: "Document processed successfully" };
     } catch (error) {
         console.error(error);
+        return { status: 500, message: "Processing failed", error: error.message };
     }
 }
 
-const fileName = 'Motive.pdf';
-const prompt = `What is the text about? Is there any mention of profile links ?`;
+async function promptAI(fileName, prompt) {
+    const WeaviateClient = await getClient();
 
-main(fileName, prompt);
+    // find collection with name fileName
+    const collection = WeaviateClient.collections.get(fileName);
+
+    // if no collection if found then return
+    if (!collection) {
+        return { status: 404, message: "Collection not found" };
+    }
+
+    const response = await collection.generate.fetchObjects({ groupedTask: prompt }, { limit: 5 });
+
+    return { status: 200, message: "Response generated successfully", response: response.generated };
+}
+
+module.exports = {
+    processDocument,
+    promptAI
+}
