@@ -2,6 +2,10 @@ const documentProcessor = require('../doc-eat');
 
 exports.fileUpload = async (req, res, next) => {
     try {
+        if (!req.file) {
+            return res.status(400).json({ message: "Please provide a valid file" });
+        }
+
         let file = req.file.originalname;
 
         const response = await documentProcessor.processDocument(file);

@@ -7,6 +7,7 @@ dotenv.config();
 const PORT = process.env.SERVER_PORT || 3000;
 
 const fileUploadRouter = require('./routes/file_upload');
+const queryRouter = require('./routes/query');
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/uploads', fileUploadRouter);
+app.use('/query', queryRouter);
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);

@@ -25,8 +25,8 @@ async function getSourceText(filePath) {
     }
 }
 
-async function downloadAndChunk(filePath, chunkSize, overlapSize) {
-    const finalFilePath = path.join(process.env.UPLOAD_PATH, filePath);
+async function downloadAndChunk(fileName, chunkSize, overlapSize) {
+    const finalFilePath = path.join(process.env.UPLOAD_PATH, fileName);
     const sourceText = await getSourceText(finalFilePath);
     const textWords = sourceText.replace(/\s+/g, ' ');
     // console.error(textWords);
@@ -48,7 +48,7 @@ async function processDocument(inputFileName) {
         // establish connection to the db
         const WeaviateClient = await getClient();
         const file = inputFileName;
-        const fileName = file.split('.').slice(0, -1).join('.');
+        const fileName = file.split('.').slice(0, -1).join('_').replace(/[^a-zA-Z0-9]/g, '_');
         const chunkedData = await getChunks(file);
 
         // create schema and define the properties
@@ -106,13 +106,13 @@ async function processDocument(inputFileName) {
 async function promptAI(fileName, prompt) {
     const WeaviateClient = await getClient();
 
-    // find collection with name fileName
-    const collection = WeaviateClient.collections.get(fileName);
-
     // if no collection if found then return
-    if (!collection) {
+    if (!await WeaviateClient.collections.exists(fileName)) {
         return { status: 404, message: "Collection not found" };
     }
+
+    // find collection with name fileName
+    const collection = WeaviateClient.collections.get(fileName);
 
     const response = await collection.generate.fetchObjects({ groupedTask: prompt }, { limit: 5 });
 
