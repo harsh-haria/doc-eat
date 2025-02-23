@@ -39,7 +39,7 @@ async function downloadAndChunk(fileName, chunkSize, overlapSize) {
 }
 
 async function getChunks(localFilePath) {
-    const chunks = await downloadAndChunk(localFilePath, 150, 25);
+    const chunks = await downloadAndChunk(localFilePath, 300, 75);
     return chunks;
 }
 
@@ -106,17 +106,27 @@ async function processDocument(inputFileName) {
 async function promptAI(fileName, prompt) {
     const WeaviateClient = await getClient();
 
-    // if no collection if found then return
     if (!await WeaviateClient.collections.exists(fileName)) {
         return { status: 404, message: "Collection not found" };
     }
 
-    // find collection with name fileName
     const collection = WeaviateClient.collections.get(fileName);
 
-    const response = await collection.generate.fetchObjects({ groupedTask: prompt }, { limit: 5 });
+    
+    // Then generate response based on relevant chunks
+    const response = await collection.generate.fetchObjects(
+        { groupedTask: prompt },
+        { limit: 5 },
+        { returnReferences: true },
+    );
+    let objectsFetched = response.objects.map(item => { return { chunk: item.properties.chunk, chunk_index: item.properties.chunk_index, id: item.uuid } });
 
-    return { status: 200, message: "Response generated successfully", response: response.generated };
+    return {
+        status: 200,
+        message: "Response generated successfully",
+        response: response.generated,
+        relevantChunks: objectsFetched
+    };
 }
 
 module.exports = {

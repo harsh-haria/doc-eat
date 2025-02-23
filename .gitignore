@@ -4,6 +4,7 @@
 
 # extras
 *.pdf
+.vscode/
 
 # secrets
 .env

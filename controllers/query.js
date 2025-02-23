@@ -13,7 +13,7 @@ exports.GetPromptResponse = async (req, res, next) => {
         const promptResponse = await documentProcessor.promptAI(sanitizedFileName, prompt);
 
         if (promptResponse.status === 200) {
-            return res.status(200).json({ status: 200, message: promptResponse.message, response: promptResponse.response });
+            return res.status(200).json({ status: 200, message: promptResponse.message, response: promptResponse.response, objects: promptResponse.relevantChunks });
         }
 
         return res.status(500).json({ status: 500, message: promptResponse.message });
