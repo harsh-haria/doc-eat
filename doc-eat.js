@@ -3,7 +3,10 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const weaviate = require('weaviate-client');
+const { OpenAI } = require('openai');
 const { getClient } = require('./weaviate');
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
 
 // New helper function to read file based on extension
 async function getSourceText(filePath) {
@@ -33,7 +36,11 @@ async function downloadAndChunk(fileName, chunkSize, overlapSize) {
     let chunks = [];
     for (let i = 0; i < textWords.length; i += chunkSize) {
         let chunk = textWords.slice(Math.max(i - overlapSize, 0), i + chunkSize);
-        chunks.push(chunk);
+        const vectors = await generateEmbeddings(chunk);
+        chunks.push({
+            chunk: chunk,
+            vectors: vectors
+        });
     }
     return chunks;
 }
@@ -41,6 +48,14 @@ async function downloadAndChunk(fileName, chunkSize, overlapSize) {
 async function getChunks(localFilePath) {
     const chunks = await downloadAndChunk(localFilePath, 300, 75);
     return chunks;
+}
+
+async function generateEmbeddings(text) {
+    const response = await openai.embeddings.create({
+        model: 'text-embedding-ada-002',
+        input: text,
+    });
+    return response.data[0].embedding;
 }
 
 async function processDocument(inputFileName) {
@@ -64,10 +79,6 @@ async function processDocument(inputFileName) {
                     dataType: 'int'
                 }
             ],
-            vectorizers: weaviate.configure.vectorizer.text2VecOpenAI({
-                model: 'text-embedding-3-small',
-            }),
-            generative: weaviate.configure.generative.openAI()
         }
 
         if (await WeaviateClient.collections.exists(fileName)) {
@@ -83,9 +94,10 @@ async function processDocument(inputFileName) {
         for (const index in chunkedData) {
             const obj = {
                 properties: {
-                    chunk: chunkedData[index],
+                    chunk: chunkedData[index]['chunk'],
                     chunk_index: +index,
                 },
+                vectors: chunkedData[index]['vectors']
             };
 
             list.push(obj);
@@ -112,7 +124,7 @@ async function promptAI(fileName, prompt) {
 
     const collection = WeaviateClient.collections.get(fileName);
 
-    
+
     // Then generate response based on relevant chunks
     const response = await collection.generate.fetchObjects(
         { groupedTask: prompt },
