@@ -13,7 +13,10 @@ async function initializeClient() {
         clientInstance = await weaviate.connectToWeaviateCloud(
             weaviateUri,
             {
-                authCredentials: new weaviate.ApiKey(weaviateApiKey)
+                authCredentials: new weaviate.ApiKey(weaviateApiKey),
+                headers: {
+                    'X-OpenAI-Api-Key': openAIKey,
+                }
             }
         );
         console.log(await clientInstance.isReady());
