@@ -213,7 +213,237 @@ async function promptAI(fileName, prompt) {
     };
 }
 
+const analyzeJsonStructure = async (jsonData, fileName) => {
+    try {
+        // Generate a unique class name for this file
+        const className = generateClassName(fileName);
+
+        // Analyze the structure using OpenAI
+        const structurePrompt = `
+            Analyze the following JSON data and identify key fields that would be useful for querying:
+            ${JSON.stringify(jsonData).substring(0, 4000)}
+
+            Create a Weaviate schema with the following requirements:
+            1. Include all top-level primitive fields (strings, numbers, booleans, dates)
+            2. For nested objects, identify important fields that should be accessed directly
+            3. For arrays, determine if they contain important data that should be searchable
+            4. Include a "content" field to store the full JSON for retrieval
+
+            Return a JSON object with the following structure:
+            {
+                "className": "${className}",
+                "properties": [
+                {"name": "fieldName", "dataType": ["string|number|boolean|date|text|string[]"]},
+                ...
+                ],
+                "vectorIndexConfig": {
+                "distance": "cosine"
+                }
+            }
+        `;
+
+        // Get schema recommendation from OpenAI
+        const response = await openai.createCompletion({
+            model: "gpt-3.5-turbo-instruct",
+            prompt: structurePrompt,
+            max_tokens: 800,
+            temperature: 0.2,
+        });
+
+        // Parse the recommended schema
+        const schemaRecommendation = JSON.parse(response.data.choices[0].text.trim());
+
+        // Add additional fields we need
+        const enhancedSchema = {
+            ...schemaRecommendation,
+            vectorizer: 'text2vec-openai',
+            moduleConfig: {
+                'text2vec-openai': {
+                    model: 'ada',
+                    modelVersion: '002',
+                    type: 'text'
+                }
+            }
+        };
+
+        // Always ensure we have fileName and content fields
+        if (!enhancedSchema.properties.find(p => p.name === 'fileName')) {
+            enhancedSchema.properties.push({
+                name: 'fileName',
+                dataType: ['string']
+            });
+        }
+
+        if (!enhancedSchema.properties.find(p => p.name === 'content')) {
+            enhancedSchema.properties.push({
+                name: 'content',
+                dataType: ['text']
+            });
+        }
+
+        // Store metadata about field types for future use
+        const fieldTypes = {};
+        enhancedSchema.properties.forEach(prop => {
+            fieldTypes[prop.name] = prop.dataType[0];
+        });
+
+        // Store this schema information for later use
+        fs.writeFileSync(
+            path.join(__dirname, 'schemas', `${className}.json`),
+            JSON.stringify({ schema: enhancedSchema, fieldTypes }, null, 2)
+        );
+
+        return { className, schema: enhancedSchema, fieldTypes };
+    } catch (error) {
+        console.error('Error analyzing JSON structure:', error);
+        throw error;
+    }
+};
+
+const createSchema = async (schema) => {
+    try {
+        // Check if schema already exists
+        const schemaExists = await client.schema.classExist(schema.className);
+
+        if (schemaExists) {
+            console.log(`Schema ${schema.className} already exists.`);
+            return;
+        }
+
+        // Create the schema
+        await client.schema.classCreator().withClass(schema).do();
+        console.log(`Schema ${schema.className} created successfully`);
+    } catch (error) {
+        console.error('Error creating schema:', error.message);
+        throw error;
+    }
+};
+
+const flattenJsonForIndexing = (data, prefix = '') => {
+    const result = {};
+
+    for (const [key, value] of Object.entries(data)) {
+        const newKey = prefix ? `${prefix}.${key}` : key;
+
+        if (value === null || value === undefined) {
+            result[newKey] = '';
+        } else if (typeof value === 'object' && !Array.isArray(value)) {
+            // Recursively flatten nested objects
+            Object.assign(result, flattenJsonForIndexing(value, newKey));
+        } else if (Array.isArray(value)) {
+            // For arrays, store as JSON string but also extract primitive values
+            result[newKey] = JSON.stringify(value);
+
+            // Also create individual entries for array items if they are primitive types
+            if (value.length > 0 && typeof value[0] !== 'object') {
+                result[`${newKey}Items`] = value;
+            } else if (value.length > 0) {
+                // For arrays of objects, flatten important fields
+                value.forEach((item, index) => {
+                    if (typeof item === 'object') {
+                        for (const [itemKey, itemValue] of Object.entries(item)) {
+                            if (typeof itemValue !== 'object') {
+                                const itemArrayKey = `${newKey}[${index}].${itemKey}`;
+                                result[itemArrayKey] = itemValue;
+                            }
+                        }
+                    }
+                });
+            }
+        } else {
+            // Store primitive values directly
+            result[newKey] = value;
+        }
+    }
+
+    return result;
+};
+
+const ingestData = async (jsonData, fileName) => {
+    try {
+        // Make sure schemas directory exists
+        if (!fs.existsSync(path.join(__dirname, 'schemas'))) {
+            fs.mkdirSync(path.join(__dirname, 'schemas'));
+        }
+
+        // Analyze JSON structure and get schema
+        const { className, schema, fieldTypes } = await analyzeJsonStructure(jsonData, fileName);
+
+        // Create the schema in Weaviate
+        await createSchema(schema);
+
+        // Flatten the data for indexing
+        const flattenedData = flattenJsonForIndexing(jsonData);
+
+        // Prepare objects for batch insertion
+        const objects = [];
+
+        // If data is an array, create an object for each item
+        if (Array.isArray(jsonData)) {
+            for (let i = 0; i < jsonData.length; i++) {
+                const item = jsonData[i];
+                const flatItem = flattenJsonForIndexing(item);
+
+                const properties = {
+                    fileName: fileName,
+                    content: JSON.stringify(item),
+                    index: i,
+                };
+
+                // Add properties from the schema
+                schema.properties.forEach(prop => {
+                    if (prop.name !== 'fileName' && prop.name !== 'content' && prop.name !== 'index') {
+                        if (flatItem[prop.name] !== undefined) {
+                            properties[prop.name] = flatItem[prop.name];
+                        }
+                    }
+                });
+
+                objects.push({
+                    class: className,
+                    properties
+                });
+            }
+        }
+        else {
+            // For single object, create one Weaviate object
+            const properties = {
+                fileName: fileName,
+                content: JSON.stringify(jsonData),
+            };
+
+            // Add properties from the schema
+            schema.properties.forEach(prop => {
+                if (prop.name !== 'fileName' && prop.name !== 'content') {
+                    if (flattenedData[prop.name] !== undefined) {
+                        properties[prop.name] = flattenedData[prop.name];
+                    }
+                }
+            });
+
+            objects.push({
+                class: className,
+                properties
+            });
+        }
+
+        // Batch import objects
+        const batcher = client.batch.objectsBatcher();
+        for (const obj of objects) {
+            batcher.withObject(obj);
+        }
+        await batcher.do();
+
+        console.log(`Successfully ingested data for ${fileName} as class ${className}`);
+        return { success: true, className, objectsCount: objects.length };
+    } catch (error) {
+        console.error('Error ingesting data:', error);
+        return { success: false, error: error.message };
+    }
+};
+
 module.exports = {
     processDocument,
-    promptAI
+    promptAI,
+    ingestData,
 }
