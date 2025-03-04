@@ -161,15 +161,14 @@ async function processDocument(inputFileName) {
 
             list.push(obj);
         }
-        const result = await collection.data.insertMany(list)
+        const result = await collection.data.insertMany(list);
 
-        if (result.hasErrors) {
-            return { status: 500, message: "Processing failed", error: result.errors };
-        }
-
-        // once the document is processed, delete the document
         const filePathToDelete = path.join(process.env.UPLOAD_PATH, file);
         fs.unlinkSync(filePathToDelete);
+
+        if (result.hasErrors) {
+            throw new Error(`Error inserting data: ${JSON.stringify(result.errors)}`);
+        }
 
         return { status: 200, message: "Document processed successfully" };
     } catch (error) {
